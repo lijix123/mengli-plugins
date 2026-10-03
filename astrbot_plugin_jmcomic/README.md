@@ -36,15 +36,15 @@
 方式一：克隆整个仓库（最简单，推荐）：
 
 ```bash
-git clone git@github.com:lijix123/Meng-Li.git
-# 插件在 Meng-Li/astrbot_plugin_jmcomic/
+git clone git@github.com:lijix123/mengli-plugins.git
+# 插件在 mengli-plugins/astrbot_plugin_jmcomic/
 ```
 
 方式二：只拉取插件目录（稀疏检出，省流量）：
 
 ```bash
-git clone --depth 1 --filter=blob:none --sparse git@github.com:lijix123/Meng-Li.git
-cd Meng-Li
+git clone --depth 1 --filter=blob:none --sparse git@github.com:lijix123/mengli-plugins.git
+cd mengli-plugins
 git sparse-checkout set astrbot_plugin_jmcomic
 ```
 
