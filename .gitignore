@@ -13,3 +13,14 @@ local.properties
 keys/
 # 备份文件
 *.bak*
+# 插件私有依赖（第三方包，不进仓库）
+**/.deps/
+# 插件运行时状态（版本记录、临时下载目录）
+**/.update_state.json
+**/.update_state.json.tmp
+**/.update_tmp/
+**/.dep_tmp/
+# 任何插件配置（可能含 token）
+**/*_config.json
+**/secrets/
+**/.env
