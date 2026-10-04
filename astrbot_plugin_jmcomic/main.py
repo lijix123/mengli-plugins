@@ -304,15 +304,21 @@ class JmComicPlugin(Star):
         try:
             shutil.rmtree(tmp, ignore_errors=True)
             tmp.mkdir(parents=True, exist_ok=True)
-            r = subprocess.run(
-                [sys.executable, "-m", "pip", "download", f"curl-cffi=={ver}",
-                 "--no-deps", "-d", str(tmp), "-i", _PIP_INDEX_URLS[0]],
-                timeout=300, check=False, capture_output=True, text=True)
-            if r.returncode != 0:
+            # 源顺序：镜像优先。
+            # 理由：版本号是钉死的（==ver），镜像上的同一个版本不会错；
+            # 而官方源 pypi.org 的索引在本机常常慢到分钟级（2026-10-04 实测
+            # 150 秒下不完一个 13.5MB 的 whl，镜像 0.7 秒）。所以先镜像，官方兜底。
+            _dep_sources = (_PIP_INDEX_URLS[1], _PIP_INDEX_URLS[0])
+            r = None
+            for _src in _dep_sources:
                 r = subprocess.run(
                     [sys.executable, "-m", "pip", "download", f"curl-cffi=={ver}",
-                     "--no-deps", "-d", str(tmp), "-i", _PIP_INDEX_URLS[1]],
-                    timeout=300, check=False, capture_output=True, text=True)
+                     "--no-deps", "--only-binary", ":all:",
+                     "--retries", "2", "--timeout", "20",
+                     "-d", str(tmp), "-i", _src],
+                    timeout=120, check=False, capture_output=True, text=True)
+                if r.returncode == 0:
+                    break
             if r.returncode != 0:
                 return False, f"pip download 失败：{(r.stderr or '')[-300:]}"
             whls = list(tmp.glob("curl_cffi-*.whl")) + list(tmp.glob("curl-cffi-*.tar.gz"))
@@ -694,21 +700,25 @@ class JmComicPlugin(Star):
         try:
             shutil.rmtree(tmp_dir, ignore_errors=True)
             tmp_dir.mkdir(parents=True, exist_ok=True)
+            # 源顺序：镜像优先（理由同依赖下载那段，官方源索引常慢到分钟级）
+            _lib_sources = (_PIP_INDEX_URLS[1], _PIP_INDEX_URLS[0])
             result = None
-            for _idx in _PIP_INDEX_URLS:
+            for _idx in _lib_sources:
                 result = subprocess.run(
                     [sys.executable, "-m", "pip", "install", "jmcomic", "-q",
-                     "--target", str(tmp_dir), "--no-deps", "-i", _idx],
-                    timeout=300, check=False)
+                     "--target", str(tmp_dir), "--no-deps",
+                     "--retries", "2", "--timeout", "20", "-i", _idx],
+                    timeout=120, check=False)
                 if result.returncode == 0:
                     break
             if result is None or result.returncode != 0:
                 return False, f"pip 下载失败(码{result.returncode if result else '无'})"
-            for _idx in _PIP_INDEX_URLS:
+            for _idx in _lib_sources:
                 subprocess.run(
                     [sys.executable, "-m", "pip", "install", "commonx", "-q",
-                     "--target", str(tmp_dir), "--no-deps", "-i", _idx],
-                    timeout=300, check=False)
+                     "--target", str(tmp_dir), "--no-deps",
+                     "--retries", "2", "--timeout", "20", "-i", _idx],
+                    timeout=120, check=False)
             importlib.invalidate_caches()
             if not (tmp_dir / "jmcomic").is_dir():
                 return False, "下载目录缺少 jmcomic 包"
@@ -978,7 +988,9 @@ class JmComicPlugin(Star):
         if len(parts) > 1 and parts[1].isdigit():
             page = max(1, int(parts[1]))
         if not self._curl_ok():
-            yield event.plain_result("加密扩展还在装，稍等几秒再试哦。")
+            yield event.plain_result(
+                "私有依赖没装，插件现在干不了活。\n"
+                "敲 jm依赖 看可选版本，再敲 jm依赖 <版本号> 下载审查，最后 jm依赖 装。")
             return
         try:
             result = await asyncio.to_thread(
@@ -1020,7 +1032,9 @@ class JmComicPlugin(Star):
         if arg:
             kind = "月" if "月" in arg else ("日" if "日" in arg else "周")
         if not self._curl_ok():
-            yield event.plain_result("加密扩展还在装，稍等几秒再试哦。")
+            yield event.plain_result(
+                "私有依赖没装，插件现在干不了活。\n"
+                "敲 jm依赖 看可选版本，再敲 jm依赖 <版本号> 下载审查，最后 jm依赖 装。")
             return
         try:
             lines = await asyncio.to_thread(self._do_rank, kind)
@@ -1067,7 +1081,9 @@ class JmComicPlugin(Star):
         if fmt is None:
             fmt = _FMT_ALIAS.get(str(self._cfg("default_format", "longimg")).strip(), "longimg")
         if not self._curl_ok():
-            yield event.plain_result("加密扩展还在装，稍等几秒再试哦。")
+            yield event.plain_result(
+                "私有依赖没装，插件现在干不了活。\n"
+                "敲 jm依赖 看可选版本，再敲 jm依赖 <版本号> 下载审查，最后 jm依赖 装。")
             return
         uid = str(event.get_sender_id())
         session = event.unified_msg_origin
@@ -1353,17 +1369,14 @@ download:
     # ---------------- 生命周期 ----------------
 
     async def terminate(self) -> None:
-        logger.info("[jm下载姬] 插件卸载，清理依赖")
-        try:
-            await asyncio.to_thread(self._uninstall_dep)
-        except Exception as e:
-            logger.error(f"[jm下载姬] 卸载清理异常: {e}")
+        """【2026-10-04 改】不再清 .deps。
 
-    @staticmethod
-    def _uninstall_dep() -> None:
-        # 所有二进制依赖都限定在插件 .deps，直接删除即可，不会影响系统或其他插件。
-        try:
-            shutil.rmtree(_DEPS_DIR, ignore_errors=True)
-            logger.info("[jm下载姬] 私有依赖目录已清理")
-        except Exception as e:
-            logger.error(f"[jm下载姬] 私有依赖清理失败: {e}")
+        原来这里会 rmtree(.deps)，本意是「卸载即净」。但 AstrBot 在**重载插件**
+        时也会调 terminate()，而插件已经改成「缺依赖只报缺、不自动装」，
+        结果每重载一次就把 40M 依赖删掉一次，插件直接变不可用，得重新走
+        jm依赖 流程才能恢复。
+
+        真正卸载插件时，插件目录会被整个删掉，.deps 就在目录里，自然跟着走，
+        根本不需要单独 rm。所以这里只留一句日志。
+        """
+        logger.info("[jm下载姬] 插件卸载/重载。.deps 保留不清，真要清请手工删或走 jm依赖 流程")
